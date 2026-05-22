@@ -1,0 +1,150 @@
+# Centralized System Configuration
+# This file contains all system configuration options in one place
+# All modules read from this configuration to determine what to enable
+
+{ lib, ... }:
+
+{
+  options.system.config = lib.mkOption {
+    type = lib.types.attrs;
+    default = {};
+    description = "Centralized system configuration";
+  };
+
+  config.system.config = {
+    # System Identity
+    system = {
+      hostname = "nixos";
+      stateVersion = "24.11";
+    };
+
+    # Locale and Regional Settings
+    locale = {
+      timezone = "America/Miami";
+      language = "en_US.UTF-8";
+      extraLocales = [ "en_US.UTF-8/UTF-8" ];
+      keyboard = {
+        console = "us";
+        layout = "us";
+        variant = "alt-intl";
+        options = "";
+      };
+    };
+
+    # Hardware Configuration
+    hardware = {
+      gpu = "amd";  # Options: amd | nvidia | intel | none
+      audio = {
+        enable = true;
+        backend = "pipewire";  # Options: pipewire | pulseaudio
+      };
+      bluetooth = {
+        enable = false;
+      };
+      printing = {
+        enable = false;
+      };
+    };
+
+    # Graphics Configuration
+    graphics = {
+      server = "wayland";  # Options: wayland | xorg
+      desktop = "cosmic";  # Options: cosmic | gnome | hyprland | i3 | xfce | awesome | none
+    };
+
+    # Storage Configuration
+    storage = {
+      lvm = {
+        enable = false;
+        vgName = "vg0";
+        lvName = "root";
+      };
+      zfs = {
+        enable = false;
+        poolName = "rpool";
+      };
+      filesystem = "ext4";  # Options: ext4 | btrfs | xfs | zfs
+      mountpoint = "/";
+    };
+
+    # Services Configuration
+    services = {
+      docker = {
+        enable = true;
+      };
+      ollama = {
+        enable = false;
+      };
+      claude = {
+        code.enable     = false;
+      };
+      ssh = {
+        enable = true;
+        permitRootLogin = false;
+      };
+      jarvis = {
+        enable = false;
+      };
+    };
+
+    # User Configuration
+    user = {
+      name = "user";
+      fullName = "User Name";
+      uid = 1000;
+      gid = 100;   # GID 100 is the standard GID for the 'users' group on Linux
+      group = "users";
+      extraGroups = [ "wheel" "networkmanager" ];
+      sudoer = true;
+      nopasswd = false;
+      shell = "bash";  # Options: bash | zsh | fish
+    };
+
+    # Network Configuration
+    network = {
+      networkmanager = {
+        enable = true;
+      };
+      firewall = {
+        enable = true;
+        allowedTCPPorts = [];
+        allowedUDPPorts = [];
+      };
+    };
+
+    # Boot Configuration
+    boot = {
+      loader = "systemd-boot";  # Options: systemd-boot | grub
+      timeout = 5;
+      quietBoot = true;
+    };
+
+    # Nix Configuration
+    nix = {
+      flakes = true;
+      autoOptimiseStore = true;
+      gc = {
+        enable = true;
+        dates = "weekly";
+        options = "--delete-older-than 7d";
+      };
+    };
+
+    # AI / QC / ML Stack
+    # Set enable = true on machines with GPU acceleration hardware (NVIDIA CUDA or AMD ROCm).
+    # Enables: Ollama, LiteLLM, OpenWebUI, ComfyUI, whisper-cpp, MCP servers (webcam, comfyui, memory),
+    #          Quantum Espresso, QuTiP, scientific Python, and ML venv setup helpers.
+    # When enabled, /data is mounted from an LVM RAID1 volume instead of living on the root fs.
+    ai = {
+      enable = false;
+
+      data = {
+        # Block device for the /data LVM logical volume (only mounted when ai.enable = true).
+        # Create it with: sudo ai-storage-setup /dev/sdX /dev/sdY
+        # For stability after setup, prefer UUID: /dev/disk/by-uuid/YOUR-UUID-HERE
+        device = "/dev/vg-data/data";
+        fsType = "ext4";
+      };
+    };
+  };
+}

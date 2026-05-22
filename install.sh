@@ -1,0 +1,710 @@
+#!/usr/bin/env bash
+
+# NixOS Automated Installer
+# Bootstrap script that sets up the environment and runs the interactive configurator
+# Usage: curl -L https://raw.githubusercontent.com/julas23/nixos/refactor/modular-architecture/install.sh | bash
+
+set -e  # Exit on error
+
+# Global variables
+TEST_MODE=false
+INSTALL_JSON="/mnt/etc/nixos/.install.json"  # Cache file for configuration choices
+
+# Colors for output
+RED='\033[0;31m'
+GREEN='\033[0;32m'
+YELLOW='\033[1;33m'
+BLUE='\033[0;34m'
+NC='\033[0m' # No Color
+
+# Logging functions
+log_info() {
+    echo -e "${BLUE}[INFO]${NC} $1"
+}
+
+log_success() {
+    echo -e "${GREEN}[SUCCESS]${NC} $1"
+}
+
+log_warning() {
+    echo -e "${YELLOW}[WARNING]${NC} $1"
+}
+
+log_error() {
+    echo -e "${RED}[ERROR]${NC} $1"
+}
+
+# Banner
+show_banner() {
+    clear
+    echo -e "${BLUE}"
+    echo "╔════════════════════════════════════════════════════════════╗"
+    echo "║                                                            ║"
+    echo "║           NixOS Automated Installer                       ║"
+    echo "║           Modular Architecture Edition                    ║"
+    echo "║                                                            ║"
+    echo "║           https://github.com/julas23/nixos                ║"
+    echo "║                                                            ║"
+    echo "╚════════════════════════════════════════════════════════════╝"
+    echo -e "${NC}"
+    echo ""
+}
+
+# Check if running as root
+check_root() {
+    if [ "$EUID" -ne 0 ]; then
+        log_error "This script must be run as root"
+        log_info "Please run: sudo $0"
+        exit 1
+    fi
+}
+
+# Check internet connectivity
+check_internet() {
+    log_info "Checking internet connectivity..."
+    
+    if ping -c 1 8.8.8.8 &> /dev/null; then
+        log_success "Internet connection detected"
+        return 0
+    else
+        log_error "No internet connection detected"
+        log_warning "Please configure network connection first"
+        log_info "You can use: sudo systemctl start wpa_supplicant"
+        log_info "Or configure manually with nmtui"
+        exit 1
+    fi
+}
+
+# Disk selection and partitioning
+select_disk() {
+    log_info "Detecting available disks..."
+    echo ""
+    
+    # List available disks
+    mapfile -t DISKS < <(lsblk -d -n -o NAME,SIZE,TYPE,MODEL -e 7,11 | awk '$3=="disk" {print "/dev/"$1, $2, $4}')
+    
+    if [ ${#DISKS[@]} -eq 0 ]; then
+        log_error "No disks found!"
+        exit 1
+    fi
+    
+    echo "Available Disks:"
+    echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+    echo "No.  Device          Size       Model"
+    echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+    
+    for i in "${!DISKS[@]}"; do
+        DISK_INFO=(${DISKS[$i]})
+        DEVICE="${DISK_INFO[0]}"
+        SIZE="${DISK_INFO[1]}"
+        MODEL="${DISK_INFO[2]:-Unknown}"
+        printf "%-4s %-15s %-10s %s\n" "$((i+1))" "$DEVICE" "$SIZE" "$MODEL"
+    done
+    
+    echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+    echo ""
+    
+    # Select disk
+    while true; do
+        read -p "Select disk number for installation (1-${#DISKS[@]}): " DISK_NUM
+        
+        if [[ "$DISK_NUM" =~ ^[0-9]+$ ]] && [ "$DISK_NUM" -ge 1 ] && [ "$DISK_NUM" -le "${#DISKS[@]}" ]; then
+            SELECTED_DISK_INFO=(${DISKS[$((DISK_NUM-1))]})
+            DISK="${SELECTED_DISK_INFO[0]}"
+            DISK_SIZE="${SELECTED_DISK_INFO[1]}"
+            DISK_MODEL="${SELECTED_DISK_INFO[2]:-Unknown}"
+            break
+        else
+            log_error "Invalid selection. Please enter a number between 1 and ${#DISKS[@]}"
+        fi
+    done
+    
+    echo ""
+    log_info "Selected Disk:"
+    echo "  Device: $DISK"
+    echo "  Size:   $DISK_SIZE"
+    echo "  Model:  $DISK_MODEL"
+    echo ""
+    
+    log_warning "ALL DATA ON THIS DISK WILL BE PERMANENTLY ERASED!"
+    echo ""
+    read -p "Are you absolutely sure you want to continue? (yes/no): " CONFIRM
+    
+    if [ "$CONFIRM" != "yes" ]; then
+        log_info "Installation cancelled by user"
+        exit 0
+    fi
+    
+    log_success "Disk selected: $DISK"
+}
+
+# Partition disk
+partition_disk() {
+    log_info "Partitioning disk $DISK..."
+    
+    # Unmount if mounted
+    umount -R /mnt 2>/dev/null || true
+    
+    # Wipe disk
+    log_info "Wiping disk..."
+    wipefs -af "$DISK" || true
+    sgdisk --zap-all "$DISK" || true
+    
+    # Create partitions
+    log_info "Creating partitions..."
+    
+    # Determine partition naming
+    if [[ "$DISK" =~ "nvme" ]] || [[ "$DISK" =~ "mmcblk" ]]; then
+        PART_PREFIX="${DISK}p"
+    else
+        PART_PREFIX="${DISK}"
+    fi
+    
+    # Create GPT partition table
+    parted "$DISK" --script mklabel gpt
+    
+    # Create EFI partition (512MB)
+    parted "$DISK" --script mkpart ESP fat32 1MiB 513MiB
+    parted "$DISK" --script set 1 esp on
+    
+    # Create root partition (rest of disk)
+    parted "$DISK" --script mkpart primary ext4 513MiB 100%
+    
+    # Wait for partitions to be recognized
+    sleep 2
+    partprobe "$DISK"
+    sleep 2
+    
+    BOOT_PART="${PART_PREFIX}1"
+    ROOT_PART="${PART_PREFIX}2"
+    
+    log_success "Partitions created:"
+    log_info "  Boot: $BOOT_PART (512MB, FAT32)"
+    log_info "  Root: $ROOT_PART (remaining, ext4)"
+}
+
+# Format partitions
+format_partitions() {
+    log_info "Formatting partitions..."
+    
+    # Format boot partition
+    log_info "Formatting boot partition ($BOOT_PART) as FAT32..."
+    mkfs.fat -F 32 -n BOOT "$BOOT_PART"
+    
+    # Format root partition
+    log_info "Formatting root partition ($ROOT_PART) as ext4..."
+    mkfs.ext4 -F -L nixos "$ROOT_PART"
+    
+    log_success "Partitions formatted successfully"
+}
+
+# Mount partitions
+mount_partitions() {
+    log_info "Mounting partitions..."
+    
+    # Mount root
+    mount "$ROOT_PART" /mnt
+    
+    # Create boot directory and mount
+    mkdir -p /mnt/boot
+    mount "$BOOT_PART" /mnt/boot
+    
+    log_success "Partitions mounted:"
+    log_info "  Root: $ROOT_PART -> /mnt"
+    log_info "  Boot: $BOOT_PART -> /mnt/boot"
+}
+
+# Clone repository
+clone_repository() {
+    log_info "Cloning NixOS configuration repository..."
+    
+    # Remove old config if exists
+    rm -rf /mnt/etc/nixos
+    
+    # Clone repository from main branch
+    git clone -b main https://github.com/julas23/nixos.git /mnt/etc/nixos
+    
+    log_success "Repository cloned to /mnt/etc/nixos"
+}
+
+# Generate hardware configuration
+generate_hardware_config() {
+    log_info "Generating hardware configuration..."
+    
+    nixos-generate-config --root /mnt
+    
+    # Move generated hardware-configuration.nix to the right place
+    if [ -f /mnt/etc/nixos/hardware-configuration.nix ]; then
+        log_success "Hardware configuration generated"
+    else
+        log_error "Failed to generate hardware configuration"
+        exit 1
+    fi
+}
+
+# Update volumes.nix with detected UUIDs
+update_volumes_uuids() {
+    log_info "Updating volumes.nix with detected UUIDs..."
+    
+    # Extract UUIDs from hardware-configuration.nix (excluding root and boot partitions)
+    # Get root and boot UUIDs first
+    ROOT_UUID=$(findmnt -n -o UUID /mnt 2>/dev/null || echo "")
+    BOOT_UUID=$(findmnt -n -o UUID /mnt/boot 2>/dev/null || echo "")
+    
+    # Extract all UUIDs from hardware-configuration.nix
+    ALL_UUIDS=($(grep -oP 'device = "/dev/disk/by-uuid/\K[^"]+' /mnt/etc/nixos/hardware-configuration.nix 2>/dev/null || echo ""))
+    
+    # Filter out root and boot UUIDs
+    UUIDS=()
+    for uuid in "${ALL_UUIDS[@]}"; do
+        if [ "$uuid" != "$ROOT_UUID" ] && [ "$uuid" != "$BOOT_UUID" ] && [ -n "$uuid" ]; then
+            UUIDS+=("$uuid")
+        fi
+    done
+    
+    NUM_VOLUMES=${#UUIDS[@]}
+    
+    if [ $NUM_VOLUMES -eq 0 ]; then
+        log_info "No additional volumes detected, skipping volumes.nix update"
+        return
+    fi
+    
+    log_info "Detected $NUM_VOLUMES additional volume(s)"
+    
+    # Generate volumes.nix content based on number of detected volumes
+    cat > /mnt/etc/nixos/modules/storage/volumes.nix << 'VOLUMES_HEADER'
+# Volume Management Configuration
+# Additional volume mounts and bind mounts for data directories
+# Auto-generated based on detected hardware
+
+{ config, lib, pkgs, ... }:
+
+let
+  cfg = config.system.config.storage;
+  username = config.system.config.user.name;
+in
+
+{
+  # External volume mounts
+  # These are mounted by UUID for reliability across reboots
+  
+VOLUMES_HEADER
+
+    # Add volume entries dynamically
+    MOUNT_NAMES=("DOCK" "NVME" "EXTRA1" "EXTRA2" "EXTRA3" "EXTRA4")
+    for i in "${!UUIDS[@]}"; do
+        MOUNT_NAME="${MOUNT_NAMES[$i]}"
+        UUID="${UUIDS[$i]}"
+        cat >> /mnt/etc/nixos/modules/storage/volumes.nix << VOLUME_ENTRY
+  fileSystems."/mnt/$MOUNT_NAME" = {
+    device = "/dev/disk/by-uuid/$UUID";
+    fsType = "ext4";
+    options = [ "defaults" "nofail" ]; 
+  };
+
+VOLUME_ENTRY
+    done
+
+    # Add bind mounts footer
+    cat >> /mnt/etc/nixos/modules/storage/volumes.nix << 'VOLUMES_FOOTER'
+  # Bind mounts for development environments
+  # These allow persistent data storage across NixOS rebuilds
+  
+  # Docker data directory
+  fileSystems."/var/lib/docker" = {
+    device = "/data/docker";
+    options = [ "bind" ];
+    noCheck = true;
+  };
+
+  # Node.js global packages
+  fileSystems."/usr/local/share/npm" = {
+    device = "/data/node/share";
+    options = [ "bind" "nofail" ];
+  };
+
+  # Python user packages
+  fileSystems."/home/${username}/.local/lib/python3.13" = {
+    device = "/data/python/lib";
+    options = [ "bind" "nofail" ];
+  };
+
+  # Rust cargo directory
+  fileSystems."/home/${username}/.cargo" = {
+    device = "/data/rust";
+    options = [ "bind" "nofail" ];
+  };
+
+  # System activation script to ensure data directories exist
+  # This runs on every boot and nixos-rebuild
+  system.activationScripts.createDataDirs = {
+    text = ''
+      # Ensure /data exists and is owned by the user
+      mkdir -p /data/docker /data/python /data/node /data/rust
+      chown -R ${username}:users /data || true
+      chmod -R 755 /data || true
+      
+      # Fix home directory and .local ownership to prevent root-lockout
+      # This is critical because of the Python/Rust bind-mounts
+      if [ -d /home/${username} ]; then
+        echo "Ensuring ownership for /home/${username}..."
+        mkdir -p /home/${username}/.local/lib/python3.13
+        mkdir -p /home/${username}/.cargo
+        chown -R ${username}:users /home/${username}
+      fi
+    '';
+  };
+}
+VOLUMES_FOOTER
+
+    log_success "volumes.nix updated with $NUM_VOLUMES volume(s)"
+}
+
+# Run interactive configurator
+run_configurator() {
+    cd /mnt/etc/nixos
+
+    # Check if a cached configuration exists
+    if [ -f "$INSTALL_JSON" ]; then
+        echo ""
+        log_info "Found cached configuration: $INSTALL_JSON"
+        echo ""
+        cat "$INSTALL_JSON" | python3 -c "
+import json, sys
+d = json.load(sys.stdin)
+print('  Hostname:       ' + str(d.get('hostname', '?')))
+print('  Timezone:       ' + str(d.get('timezone', '?')))
+print('  Desktop:        ' + str(d.get('desktop', '?')))
+print('  Display Server: ' + str(d.get('display_server', '?')))
+print('  Username:       ' + str(d.get('username', '?')))
+print('  GPU:            ' + str(d.get('gpu', '?')))
+print('  Docker:         ' + str(d.get('docker_enable', False)))
+"
+        echo ""
+        read -p "Use cached configuration? [Y/n]: " USE_CACHE
+        USE_CACHE=${USE_CACHE:-Y}
+
+        if [[ "$USE_CACHE" =~ ^[Yy]$ ]]; then
+            log_info "Loading configuration from cache..."
+            nix-shell -p python3 --run "python3 /mnt/etc/nixos/install/configurator.py --from-json $INSTALL_JSON"
+
+            if [ $? -ne 0 ]; then
+                log_error "Failed to load cached configuration"
+                exit 1
+            fi
+
+            log_success "Configuration loaded from cache"
+            return 0
+        else
+            log_info "Starting fresh configuration wizard..."
+            echo ""
+        fi
+    else
+        log_info "Starting interactive configuration wizard..."
+        echo ""
+        log_info "The wizard will guide you through system configuration"
+        echo ""
+        sleep 2
+    fi
+
+    # Run interactive wizard — saves choices to INSTALL_JSON automatically
+    nix-shell -p python3 --run "python3 /mnt/etc/nixos/install/configurator.py --save-json $INSTALL_JSON"
+
+    if [ $? -ne 0 ]; then
+        log_error "Configuration wizard failed or was cancelled"
+        exit 1
+    fi
+
+    log_success "Configuration completed"
+}
+
+# Validate NixOS configuration
+validate_configuration() {
+    log_info "Validating NixOS configuration..."
+    echo ""
+    
+    # Change to the configuration directory
+    cd /mnt/etc/nixos
+    
+    # Try to evaluate the configuration
+    log_info "Step 1/3: Checking syntax with nix-instantiate..."
+    if nix-instantiate --eval '<nixpkgs/nixos>' -A config.system.build.toplevel --arg configuration ./configuration.nix > /dev/null 2>&1; then
+        log_success "Syntax check passed"
+    else
+        log_error "Syntax check failed"
+        log_info "Running detailed check..."
+        nix-instantiate --eval '<nixpkgs/nixos>' -A config.system.build.toplevel --arg configuration ./configuration.nix
+        return 1
+    fi
+    
+    echo ""
+    log_info "Step 2/3: Dry-building configuration..."
+    if nixos-rebuild dry-build --flake .#nixos 2>&1 | tee /tmp/nixos-dryrun.log; then
+        log_success "Dry-build completed successfully"
+    else
+        log_warning "Dry-build had issues, checking details..."
+        cat /tmp/nixos-dryrun.log
+    fi
+    
+    echo ""
+    log_info "Step 3/3: Checking for common issues..."
+    
+    # Check for undefined options
+    if grep -q "error: undefined variable" /tmp/nixos-dryrun.log 2>/dev/null; then
+        log_error "Found undefined variables in configuration"
+        grep "undefined variable" /tmp/nixos-dryrun.log
+        return 1
+    fi
+    
+    # Check for deprecated options
+    if grep -q "warning.*renamed to" /tmp/nixos-dryrun.log 2>/dev/null; then
+        log_warning "Found deprecated options:"
+        grep "warning.*renamed to" /tmp/nixos-dryrun.log
+    fi
+    
+    echo ""
+    log_success "Configuration validation completed!"
+    log_info "All checks passed. Configuration is ready for installation."
+    
+    return 0
+}
+
+# Install NixOS
+install_nixos() {
+    log_info "Installing NixOS..."
+    echo ""
+    log_warning "This may take a while depending on your internet connection..."
+    echo ""
+    
+    nixos-install --no-root-passwd
+    
+    if [ $? -eq 0 ]; then
+        log_success "NixOS installed successfully!"
+    else
+        log_error "NixOS installation failed"
+        exit 1
+    fi
+}
+
+# Set root password
+set_root_password() {
+    log_info "Setting root password..."
+    
+    while true; do
+        echo ""
+        read -sp "Enter root password: " ROOT_PASS
+        echo ""
+        read -sp "Confirm root password: " ROOT_PASS_CONFIRM
+        echo ""
+        
+        if [ "$ROOT_PASS" == "$ROOT_PASS_CONFIRM" ]; then
+            # Create password setup script
+            cat > /mnt/tmp/set-root-password.sh << EOF
+#!/usr/bin/env bash
+echo "root:$ROOT_PASS" | chpasswd
+EOF
+            chmod +x /mnt/tmp/set-root-password.sh
+            
+            # Execute script inside the new system
+            nixos-enter --root /mnt -c "/tmp/set-root-password.sh"
+            rm /mnt/tmp/set-root-password.sh
+            
+            log_success "Root password set"
+            break
+        else
+            log_error "Passwords do not match. Please try again."
+        fi
+    done
+}
+
+# Set user password
+set_user_password() {
+    # Get username and password from config.nix
+    USERNAME=$(awk '/user = \{/,/\}/ {if (/name =/) print}' /mnt/etc/nixos/modules/config.nix | sed 's/.*"\(.*\)".*/\1/')
+    USER_PASS=$(awk '/user = \{/,/\}/ {if (/_password =/) print}' /mnt/etc/nixos/modules/config.nix | sed 's/.*"\(.*\)".*/\1/')
+    
+    if [ -z "$USERNAME" ]; then
+        log_warning "No username found in configuration, skipping user password setup"
+        return
+    fi
+    
+    if [ -z "$USER_PASS" ]; then
+        log_warning "No password found in configuration, skipping user password setup"
+        return
+    fi
+    
+    log_info "Setting password for user: $USERNAME"
+    
+    # Create password setup script
+    cat > /mnt/tmp/set-user-password.sh << EOF
+#!/usr/bin/env bash
+echo "$USERNAME:$USER_PASS" | chpasswd
+EOF
+    chmod +x /mnt/tmp/set-user-password.sh
+    
+    # Execute script inside the new system
+    nixos-enter --root /mnt -c "/tmp/set-user-password.sh"
+    rm /mnt/tmp/set-user-password.sh
+    
+    log_success "Password set for user $USERNAME"
+}
+
+# Show completion message
+show_completion() {
+    echo ""
+    echo -e "${GREEN}"
+    echo "╔════════════════════════════════════════════════════════════╗"
+    echo "║                                                            ║"
+    echo "║           Installation Complete!                          ║"
+    echo "║                                                            ║"
+    echo "╚════════════════════════════════════════════════════════════╝"
+    echo -e "${NC}"
+    echo ""
+    log_success "NixOS has been successfully installed!"
+    echo ""
+    log_info "Installation Summary:"
+    echo "  • Disk: $DISK"
+    echo "  • Boot: $BOOT_PART (mounted at /boot)"
+    echo "  • Root: $ROOT_PART (mounted at /)"
+    echo "  • Configuration: /mnt/etc/nixos/"
+    echo ""
+    log_info "Next steps:"
+    echo "  1. Review your configuration in /mnt/etc/nixos/modules/config.nix"
+    echo "  2. Reboot: reboot"
+    echo "  3. Remove installation media"
+    echo "  4. Enjoy your new NixOS system!"
+    echo ""
+    
+    read -p "Press Enter to reboot or Ctrl+C to stay in live environment..."
+    reboot
+}
+
+# Parse command line arguments
+parse_arguments() {
+    for arg in "$@"; do
+        case $arg in
+            --check|--test)
+                TEST_MODE=true
+                log_info "Running in TEST MODE - no installation will be performed"
+                ;;
+            --reset-cache|--fresh)
+                if [ -f "$INSTALL_JSON" ]; then
+                    rm -f "$INSTALL_JSON"
+                    log_info "Cache cleared: $INSTALL_JSON"
+                else
+                    log_info "No cache file found, nothing to clear"
+                fi
+                ;;
+            --show-cache)
+                if [ -f "$INSTALL_JSON" ]; then
+                    log_info "Cached configuration ($INSTALL_JSON):"
+                    cat "$INSTALL_JSON"
+                else
+                    log_warning "No cache file found at $INSTALL_JSON"
+                fi
+                exit 0
+                ;;
+            --help|-h)
+                show_usage
+                exit 0
+                ;;
+            *)
+                log_error "Unknown argument: $arg"
+                show_usage
+                exit 1
+                ;;
+        esac
+    done
+}
+# Show usage information
+show_usage() {
+    echo "Usage: $0 [OPTIONS]"
+    echo ""
+    echo "Options:"
+    echo "  --check, --test    Validate configuration without installing (dry-run)"
+    echo "  --reset-cache      Clear saved .install.json and force fresh wizard"
+    echo "  --show-cache       Display current cached configuration and exit"
+    echo "  --help, -h         Show this help message"
+    echo ""
+    echo "Cache behavior:"
+    echo "  If /mnt/etc/nixos/.install.json exists, the installer will offer to"
+    echo "  reuse the previous configuration, skipping the interactive wizard."
+    echo "  This is useful for repeated test installations."
+    echo ""
+    echo "Examples:"
+    echo "  $0                 # Normal installation (uses cache if available)"
+    echo "  $0 --check         # Validate config only, no disk operations"
+    echo "  $0 --reset-cache   # Clear cache and run fresh wizard"
+    echo "  $0 --show-cache    # Show what is saved in the cache"
+}
+
+# Main installation flow
+main() {
+    # Parse arguments first
+    parse_arguments "$@"
+    
+    show_banner
+    
+    if [ "$TEST_MODE" = true ]; then
+        log_warning "TEST MODE ENABLED - Configuration will be validated but not installed"
+        echo ""
+    fi
+    
+    check_root
+    check_internet
+
+    # --check mode: skip disk operations, go straight to validation
+    if [ "$TEST_MODE" = true ]; then
+        log_info "Starting NixOS installation process..."
+        echo ""
+
+        # Configuration only (no disk ops)
+        clone_repository
+        generate_hardware_config
+        update_volumes_uuids
+        run_configurator
+
+        echo ""
+        log_info "=== VALIDATION MODE (no disk operations) ==="
+        echo ""
+        validate_configuration
+
+        if [ $? -eq 0 ]; then
+            echo ""
+            log_success "✅ Configuration is valid and ready for installation!"
+            log_info "Run without --check to perform the actual installation"
+        else
+            echo ""
+            log_error "❌ Configuration validation failed"
+            log_info "Please fix the errors above and try again"
+            exit 1
+        fi
+        exit 0
+    fi
+
+    log_info "Starting NixOS installation process..."
+    echo ""
+
+    # Disk operations
+    select_disk
+    partition_disk
+    format_partitions
+    mount_partitions
+
+    # Configuration
+    clone_repository
+    generate_hardware_config
+    update_volumes_uuids
+    run_configurator
+
+    # Normal mode: install
+    install_nixos
+    set_root_password
+    set_user_password
+
+    # Complete
+    show_completion
+}
+
+# Run main function
+main "$@"
