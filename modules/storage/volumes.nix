@@ -11,6 +11,7 @@ in
 {
   # External volume mounts
   # These are mounted by UUID for reliability across reboots
+  # Replace the placeholder UUIDs below with your own (see `lsblk -f` or `blkid`)
   
   fileSystems."/mnt/DOCK" = {
     device = "/dev/disk/by-uuid/XXXXXXXX-XXXX-XXXX-XXXX-XXXXXXXXXXX1";

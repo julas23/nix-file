@@ -19,14 +19,14 @@ Complete automated installation script for NixOS with interactive configuration 
 Boot NixOS Live USB and run:
 
 ```bash
-curl -L https://raw.githubusercontent.com/julas23/nixos/refactor/modular-architecture/install.sh | sudo bash
+curl -L https://raw.githubusercontent.com/julas23/nix-file/main/install.sh | sudo bash
 ```
 
 ### Method 2: Download and Run
 
 ```bash
 # Download the script
-curl -O https://raw.githubusercontent.com/julas23/nixos/refactor/modular-architecture/install.sh
+curl -O https://raw.githubusercontent.com/julas23/nix-file/main/install.sh
 
 # Make it executable
 chmod +x install.sh
@@ -395,7 +395,7 @@ Found a bug or want to improve the installer?
 
 ## Support
 
-- **GitHub Issues**: https://github.com/julas23/nixos/issues
+- **GitHub Issues**: https://github.com/julas23/nix-file/issues
 - **NixOS Manual**: https://nixos.org/manual/nixos/stable/
 - **NixOS Discourse**: https://discourse.nixos.org/
 

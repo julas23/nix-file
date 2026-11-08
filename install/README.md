@@ -155,7 +155,7 @@ The configurator can be integrated into the main installation script:
 # ...
 
 # Clone repository
-git clone https://github.com/julas23/nixos.git /mnt/etc/nixos
+git clone https://github.com/julas23/nix-file.git /mnt/etc/nixos
 
 # Run configurator
 python3 /mnt/etc/nixos/install/configurator.py

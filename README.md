@@ -103,7 +103,7 @@ nixos/
 ### 1. Clone the Repository
 
 ```bash
-git clone https://github.com/julas23/nixos.git /etc/nixos
+git clone https://github.com/julas23/nix-file.git /etc/nixos
 cd /etc/nixos
 ```
 

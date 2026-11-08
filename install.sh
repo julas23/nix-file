@@ -2,7 +2,7 @@
 
 # NixOS Automated Installer
 # Bootstrap script that sets up the environment and runs the interactive configurator
-# Usage: curl -L https://raw.githubusercontent.com/julas23/nixos/refactor/modular-architecture/install.sh | bash
+# Usage: curl -L https://raw.githubusercontent.com/julas23/nix-file/main/install.sh | bash
 
 set -e  # Exit on error
 
@@ -43,7 +43,7 @@ show_banner() {
     echo "║           NixOS Automated Installer                       ║"
     echo "║           Modular Architecture Edition                    ║"
     echo "║                                                            ║"
-    echo "║           https://github.com/julas23/nixos                ║"
+    echo "║           https://github.com/julas23/nix-file             ║"
     echo "║                                                            ║"
     echo "╚════════════════════════════════════════════════════════════╝"
     echo -e "${NC}"
@@ -222,7 +222,7 @@ clone_repository() {
     rm -rf /mnt/etc/nixos
     
     # Clone repository from main branch
-    git clone -b main https://github.com/julas23/nixos.git /mnt/etc/nixos
+    git clone -b main https://github.com/julas23/nix-file.git /mnt/etc/nixos
     
     log_success "Repository cloned to /mnt/etc/nixos"
 }
